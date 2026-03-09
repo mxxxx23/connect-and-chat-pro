@@ -9,11 +9,17 @@ import ModeSelect from "@/pages/ModeSelect";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { getProfile, clearProfile } from "@/lib/userProfile";
-import { LogOut, Plane } from "lucide-react";
+import { LogOut, Plane, MessageSquareText } from "lucide-react";
 import heroIllustration from "@/assets/hero-illustration.png";
 
 type CategoryFilter = "all" | "food" | "help" | "shopping" | "social";
-type AppView = "onboarding" | "mode-select" | "home" | "scenario" | "airport-checkin";
+type AppView =
+  | "onboarding"
+  | "mode-select"
+  | "home"
+  | "scenario"
+  | "airport-checkin"
+  | "airport-checkin-aac";
 
 const Index = () => {
   const [view, setView] = useState<AppView>("onboarding");
@@ -50,7 +56,15 @@ const Index = () => {
   if (view === "airport-checkin") {
     return (
       <div className="min-h-screen bg-background py-6">
-        <AirportCheckIn onBack={() => setView("home")} />
+        <AirportCheckIn onBack={() => setView("home")} mode="voice" />
+      </div>
+    );
+  }
+
+  if (view === "airport-checkin-aac") {
+    return (
+      <div className="min-h-screen bg-background py-6">
+        <AirportCheckIn onBack={() => setView("home")} mode="aac" />
       </div>
     );
   }
@@ -123,25 +137,42 @@ const Index = () => {
       {/* Featured: Airport Check-in */}
       <section className="max-w-4xl mx-auto px-4 py-8">
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.2 }}>
-          <h2 className="font-display text-2xl font-bold text-foreground mb-4">
-            🎤 Voice Scenario — Try it now!
-          </h2>
-          <Card
-            className="border-2 border-primary/20 hover:border-primary cursor-pointer transition-colors"
-            onClick={() => setView("airport-checkin")}
-          >
-            <CardContent className="p-6 flex items-center gap-4">
-              <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center text-3xl flex-shrink-0">
-                <Plane className="w-8 h-8 text-primary" />
-              </div>
-              <div>
-                <h3 className="font-display text-xl font-bold text-foreground">Airport Check-in</h3>
-                <p className="text-muted-foreground">
-                  Speak to our mascot to check in for your flight. Uses camera &amp; microphone.
-                </p>
-              </div>
-            </CardContent>
-          </Card>
+          <h2 className="font-display text-2xl font-bold text-foreground mb-4">Airport Check-in Practice</h2>
+          <div className="grid gap-4 md:grid-cols-2">
+            <Card
+              className="border-2 border-primary/20 hover:border-primary cursor-pointer transition-colors"
+              onClick={() => setView("airport-checkin")}
+            >
+              <CardContent className="p-6 flex items-center gap-4">
+                <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center text-3xl flex-shrink-0">
+                  <Plane className="w-8 h-8 text-primary" />
+                </div>
+                <div>
+                  <h3 className="font-display text-xl font-bold text-foreground">Voice Mode</h3>
+                  <p className="text-muted-foreground">
+                    Speak to the mascot to complete airport check-in using your voice.
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card
+              className="border-2 border-accent/30 hover:border-accent cursor-pointer transition-colors"
+              onClick={() => setView("airport-checkin-aac")}
+            >
+              <CardContent className="p-6 flex items-center gap-4">
+                <div className="w-16 h-16 rounded-2xl bg-accent/10 flex items-center justify-center text-3xl flex-shrink-0">
+                  <MessageSquareText className="w-8 h-8 text-accent" />
+                </div>
+                <div>
+                  <h3 className="font-display text-xl font-bold text-foreground">AAC Mode</h3>
+                  <p className="text-muted-foreground">
+                    Practice check-in with AAC responses using phrase buttons or typed messages.
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
         </motion.div>
       </section>
 

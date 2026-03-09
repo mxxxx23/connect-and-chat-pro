@@ -7,44 +7,83 @@ import { useSpeechRecognition } from "@/hooks/useSpeechRecognition";
 import { useSpeechSynthesis } from "@/hooks/useSpeechSynthesis";
 import CameraFeed from "@/components/CameraFeed";
 import MascotAvatar from "@/components/MascotAvatar";
-import { ArrowLeft, Mic, MicOff, Lightbulb, RotateCcw, Star } from "lucide-react";
+import { ArrowLeft, Mic, MicOff, Lightbulb, RotateCcw, Star, MessageSquareText, Undo2 } from "lucide-react";
 
 interface AirportCheckInProps {
   onBack: () => void;
+  mode?: "voice" | "aac";
 }
 
-const AirportCheckIn = ({ onBack }: AirportCheckInProps) => {
+const AirportCheckIn = ({ onBack, mode = "voice" }: AirportCheckInProps) => {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [mascotMessage, setMascotMessage] = useState("");
   const [showHint, setShowHint] = useState(false);
   const [hintTimer, setHintTimer] = useState<NodeJS.Timeout | null>(null);
   const [isComplete, setIsComplete] = useState(false);
   const [waitingForResponse, setWaitingForResponse] = useState(false);
+  const [aacStrip, setAacStrip] = useState<string[]>([]);
+  const [brokenImages, setBrokenImages] = useState<Record<string, boolean>>({});
+  const [isAdvancing, setIsAdvancing] = useState(false);
 
   const { isListening, transcript, startListening, stopListening, resetTranscript, isSupported } =
     useSpeechRecognition();
   const { speak, isSpeaking, stop: stopSpeaking } = useSpeechSynthesis();
 
-  const checkpoint = airportCheckInScenario[currentIndex];
-  const isLastCheckpoint = currentIndex === airportCheckInScenario.length - 1;
-  const progress = (currentIndex / (airportCheckInScenario.length - 1)) * 100;
+  const safeSpeak = useCallback(
+    async (text: string) => {
+      // Never let blocked/slow TTS freeze scenario progression.
+      await Promise.race([
+        speak(text),
+        new Promise<void>((resolve) => setTimeout(resolve, 1800)),
+      ]);
+    },
+    [speak]
+  );
+
+  const lastCheckpointIndex = airportCheckInScenario.length - 1;
+  const safeIndex = Math.min(Math.max(currentIndex, 0), lastCheckpointIndex);
+  const checkpoint = airportCheckInScenario[safeIndex];
+  const isLastCheckpoint = safeIndex === lastCheckpointIndex;
+  const progress = (safeIndex / lastCheckpointIndex) * 100;
+  const availableCards = checkpoint?.aacPictureCards.filter(Boolean) ?? [];
+
+  const getCardById = useCallback(
+    (cardId: string) => availableCards.find((card) => card.id === cardId),
+    [availableCards]
+  );
+
+  const isValidAacSelection = useCallback(
+    (selectedIds: string[]) => {
+      if (!checkpoint?.validAacCombinations?.length) return false;
+      const normalized = [...selectedIds].sort();
+      return checkpoint.validAacCombinations.some((combo) => {
+        const sortedCombo = [...combo].sort();
+        if (sortedCombo.length !== normalized.length) return false;
+        return sortedCombo.every((id, idx) => id === normalized[idx]);
+      });
+    },
+    [checkpoint]
+  );
 
   // Speak mascot prompt on checkpoint change
   useEffect(() => {
     if (!checkpoint) return;
+    stopSpeaking();
     setMascotMessage(checkpoint.mascotPrompt);
     setShowHint(false);
     setWaitingForResponse(false);
+    setAacStrip([]);
     resetTranscript();
 
     const speakAndWait = async () => {
-      await speak(checkpoint.mascotPrompt);
       if (!isLastCheckpoint) {
         setWaitingForResponse(true);
+        setIsAdvancing(false);
       } else {
         // Final checkpoint - scenario complete
         setTimeout(() => setIsComplete(true), 2000);
       }
+      void safeSpeak(checkpoint.mascotPrompt);
     };
     speakAndWait();
 
@@ -66,41 +105,45 @@ const AirportCheckIn = ({ onBack }: AirportCheckInProps) => {
   // Process user response
   const processResponse = useCallback(
     async (userSpeech: string) => {
-      if (!checkpoint || isLastCheckpoint) return;
+      if (!checkpoint || isLastCheckpoint || isAdvancing) return;
       const lower = userSpeech.toLowerCase();
 
-      // For destination (first checkpoint), accept any multi-word answer
       const isAccepted =
-        checkpoint.id === "greeting"
+        mode === "voice" && checkpoint.id === "greeting"
           ? lower.trim().length > 2
           : checkpoint.keywords.some((kw) => lower.includes(kw));
 
       if (isAccepted) {
+        setIsAdvancing(true);
         setShowHint(false);
-        setWaitingForResponse(false);
+        // Keep AAC board visible while we transition to avoid a blank left panel.
+        if (mode === "voice") {
+          setWaitingForResponse(false);
+        }
         setMascotMessage(checkpoint.successResponse);
-        await speak(checkpoint.successResponse);
+        await safeSpeak(checkpoint.successResponse);
         setTimeout(() => {
-          setCurrentIndex((prev) => prev + 1);
+          setCurrentIndex((prev) => Math.min(prev + 1, lastCheckpointIndex));
         }, 800);
       } else {
         setMascotMessage(checkpoint.hintPrompt);
-        await speak(checkpoint.hintPrompt);
+        await safeSpeak(checkpoint.hintPrompt);
         setWaitingForResponse(true);
       }
     },
-    [checkpoint, isLastCheckpoint, speak]
+    [checkpoint, isLastCheckpoint, isAdvancing, lastCheckpointIndex, mode, safeSpeak]
   );
 
   // When user stops speaking, process
   useEffect(() => {
-    if (!isListening && transcript && waitingForResponse) {
+    if (mode === "voice" && !isListening && transcript && waitingForResponse) {
       processResponse(transcript);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isListening]);
+  }, [isListening, mode]);
 
   const handleMicToggle = () => {
+    if (mode !== "voice") return;
     if (isListening) {
       stopListening();
     } else {
@@ -109,10 +152,40 @@ const AirportCheckIn = ({ onBack }: AirportCheckInProps) => {
     }
   };
 
+  const handleAacCardSelect = (cardId: string) => {
+    if (!waitingForResponse || isSpeaking) return;
+    setAacStrip((prev) => {
+      if (prev.includes(cardId)) return prev;
+      return [...prev, cardId].slice(-6);
+    });
+  };
+
+  const handleAacUndo = () => {
+    setAacStrip((prev) => prev.slice(0, -1));
+  };
+
+  const handleAacSend = () => {
+    if (!checkpoint || !waitingForResponse || aacStrip.length === 0 || isAdvancing) return;
+    if (isValidAacSelection(aacStrip)) {
+      const selectedMessage = aacStrip
+        .map((cardId) => getCardById(cardId)?.label || "")
+        .filter(Boolean)
+        .join(" ");
+      processResponse(selectedMessage);
+      return;
+    }
+
+    setMascotMessage(checkpoint.hintPrompt);
+    void safeSpeak(checkpoint.hintPrompt);
+    setWaitingForResponse(true);
+  };
+
   const handleRestart = () => {
+    stopListening();
     stopSpeaking();
     setCurrentIndex(0);
     setIsComplete(false);
+    setAacStrip([]);
     resetTranscript();
   };
 
@@ -135,7 +208,9 @@ const AirportCheckIn = ({ onBack }: AirportCheckInProps) => {
           Check-in Complete!
         </h2>
         <p className="text-lg text-muted-foreground mb-8">
-          You successfully completed the airport check-in! Great communication skills!
+          {mode === "aac"
+            ? "You completed the airport check-in using AAC responses. Great communication skills!"
+            : "You successfully completed the airport check-in! Great communication skills!"}
         </p>
         <div className="flex items-center justify-center gap-2 mb-8">
           {[...Array(3)].map((_, i) => (
@@ -161,8 +236,19 @@ const AirportCheckIn = ({ onBack }: AirportCheckInProps) => {
     );
   }
 
+  if (!checkpoint) {
+    return (
+      <div className="max-w-2xl mx-auto px-4 py-10 text-center">
+        <p className="text-muted-foreground mb-4">Something went wrong with this step. Please restart.</p>
+        <Button variant="accent" onClick={handleRestart}>
+          <RotateCcw className="w-4 h-4" /> Restart Scenario
+        </Button>
+      </div>
+    );
+  }
+
   return (
-    <div className="max-w-4xl mx-auto px-4 py-6">
+    <div className={`${mode === "aac" ? "max-w-6xl" : "max-w-4xl"} mx-auto px-4 py-6`}>
       {/* Header */}
       <div className="flex items-center gap-3 mb-4">
         <Button variant="ghost" size="sm" onClick={onBack}>
@@ -170,7 +256,7 @@ const AirportCheckIn = ({ onBack }: AirportCheckInProps) => {
         </Button>
         <div className="flex-1">
           <h2 className="font-display text-xl font-bold text-foreground">
-            ✈️ Airport Check-in
+            ✈️ Airport Check-in {mode === "aac" ? "(AAC)" : ""}
           </h2>
           <p className="text-sm text-muted-foreground">
             Step {currentIndex + 1} of {airportCheckInScenario.length}
@@ -180,13 +266,13 @@ const AirportCheckIn = ({ onBack }: AirportCheckInProps) => {
 
       <Progress value={progress} className="mb-6 h-3" />
 
-      <div className="grid md:grid-cols-2 gap-6">
+      <div className={`${mode === "aac" ? "grid lg:grid-cols-[1.7fr_1fr] gap-6" : "grid md:grid-cols-2 gap-6"}`}>
         {/* Left: Camera + Mic */}
         <div className="space-y-4">
-          <CameraFeed />
+          {mode === "voice" && <CameraFeed />}
 
-          {/* Mic button */}
-          {waitingForResponse && (
+          {/* Voice mode controls */}
+          {waitingForResponse && mode === "voice" && (
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <Button
                 size="xl"
@@ -213,8 +299,8 @@ const AirportCheckIn = ({ onBack }: AirportCheckInProps) => {
             </motion.div>
           )}
 
-          {/* Transcript */}
-          {transcript && (
+          {/* Voice transcript */}
+          {mode === "voice" && transcript && (
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -222,6 +308,116 @@ const AirportCheckIn = ({ onBack }: AirportCheckInProps) => {
             >
               <p className="text-xs font-semibold text-muted-foreground uppercase mb-1">You said:</p>
               <p className="text-foreground text-lg">"{transcript}"</p>
+            </motion.div>
+          )}
+
+          {/* AAC mode controls */}
+          {mode === "aac" && !isLastCheckpoint && (
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="bg-card border-2 border-border rounded-xl p-6 space-y-4"
+            >
+              <div className="flex items-center gap-2 text-base font-semibold text-muted-foreground uppercase">
+                <MessageSquareText className="w-4 h-4" />
+                PECS / Communication Board
+              </div>
+
+              <div className="rounded-lg border border-border bg-muted/40 p-3">
+                <p className="text-sm font-semibold uppercase text-muted-foreground mb-2">Sentence strip</p>
+                <div className="min-h-12 flex flex-wrap gap-2">
+                  {aacStrip.length > 0 ? (
+                    aacStrip.map((cardId) => (
+                      <span
+                        key={cardId}
+                        className="inline-flex items-center rounded-md bg-background border border-border px-3 py-1.5 text-base"
+                      >
+                        {getCardById(cardId)?.label || cardId}
+                      </span>
+                    ))
+                  ) : (
+                    <span className="text-base text-muted-foreground">
+                      {isAdvancing ? "Processing your answer..." : "Tap picture cards to build your response."}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
+                {availableCards.map((card) => (
+                  <button
+                    key={card.id}
+                    type="button"
+                    className={`rounded-xl border-2 p-2.5 min-h-[108px] text-center transition-colors disabled:opacity-50 ${
+                      aacStrip.includes(card.id)
+                        ? "border-accent bg-accent/15"
+                        : "border-border bg-background hover:border-accent hover:bg-accent/10"
+                    }`}
+                    onClick={() => handleAacCardSelect(card.id)}
+                    disabled={isSpeaking || !waitingForResponse || isAdvancing}
+                  >
+                    {card.imageSrc && !brokenImages[card.id] ? (
+                      <img
+                        src={card.imageSrc}
+                        alt={card.label}
+                        className="w-full h-16 object-cover rounded-md mb-1.5"
+                        onError={() =>
+                          setBrokenImages((prev) => ({
+                            ...prev,
+                            [card.id]: true,
+                          }))
+                        }
+                      />
+                    ) : (
+                      <div className="text-3xl leading-none mb-1.5" aria-hidden="true">
+                        {card.emoji}
+                      </div>
+                    )}
+                    <div className="text-[13px] font-semibold text-foreground leading-tight">{card.label}</div>
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex gap-2">
+                <Button
+                  variant="secondary"
+                  onClick={handleAacUndo}
+                  disabled={isSpeaking || aacStrip.length === 0 || !waitingForResponse || isAdvancing}
+                >
+                  <Undo2 className="w-4 h-4" /> Undo
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => setAacStrip([])}
+                  disabled={isSpeaking || aacStrip.length === 0 || !waitingForResponse || isAdvancing}
+                >
+                  Clear
+                </Button>
+                <Button
+                  className="ml-auto"
+                  variant="accent"
+                  onClick={handleAacSend}
+                  disabled={isSpeaking || aacStrip.length === 0 || isAdvancing || !waitingForResponse}
+                >
+                  Submit Response
+                </Button>
+              </div>
+
+              <div className="space-y-2 pt-2">
+                <p className="text-sm font-semibold text-muted-foreground uppercase">Visual Reference Boards</p>
+                <div className="grid md:grid-cols-2 gap-3">
+                  <img
+                    src="/aac-source/core-word-board.png"
+                    alt="Core word AAC communication board"
+                    className="w-full rounded-lg border border-border bg-background p-2"
+                  />
+                  <img
+                    src="/aac-source/quick-communication-boards.png"
+                    alt="Quick communication AAC board"
+                    className="w-full rounded-lg border border-border bg-background p-2"
+                  />
+                </div>
+              </div>
             </motion.div>
           )}
         </div>
